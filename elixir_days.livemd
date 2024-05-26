@@ -1,0 +1,432 @@
+<!-- livebook:{"app_settings":{"show_source":true,"slug":"elixir-days-lubien"},"file_entries":[{"name":"124335690-fc7ecd80-db4f-11eb-93fa-dcf4469bb07b.png","type":"attachment"},{"name":"1_pnSzmFJRCJztS7tkSJXYuQ.jpg","type":"attachment"},{"name":"200w.gif","type":"attachment"},{"name":"290008343-ffe7f630-8e25-4fab-b78d-c6e4b28a0753.jpg","type":"attachment"},{"name":"662129a49bfada7b5d93f4cb_295737873-c922d123-1019-4e1a-87bf-2b3f998a6c91.jpg","type":"attachment"},{"name":"9121359.png","type":"attachment"},{"name":"Tigris-Data-Logo.png","type":"attachment"},{"name":"alchemists.png","type":"attachment"},{"name":"castlevania-holy-water.gif","type":"attachment"},{"name":"fly-together.png","type":"attachment"},{"name":"photo_2024-05-24_15-56-31.jpg","type":"attachment"},{"name":"photo_2024-05-24_16-02-54.jpg","type":"attachment"},{"name":"photo_2024-05-24_16-15-44.jpg","type":"attachment"},{"name":"turso3.png","type":"attachment"},{"name":"upstash-white-bg.svg","type":"attachment"}],"persist_outputs":true} -->
+
+# Running untrusted code with Fly.io
+
+```elixir
+Mix.install([
+  {:kino, "~> 0.12.0"},
+  {:req, "~> 0.4.0"}
+])
+```
+
+## Intro
+
+![Kuniyoshi's Skeleton Specter](files/662129a49bfada7b5d93f4cb_295737873-c922d123-1019-4e1a-87bf-2b3f998a6c91.jpg)
+
+> Kuniyoshi's Skeleton Specter
+
+## Who am I
+
+### Hello, I'm https://lubien.dev
+
+![](files/9121359.png)
+
+* Working at Fly.io for almost 3 years
+* Doing a lot of fullstack Elixir work and sometimes platform work.
+* I like to figure things out
+* Follow me on https://x.com/joao_lubien to see random code stuff
+
+## Part 1: A bit of a backstory
+
+![](files/fly-together.png)
+
+https://github.com/lubien/fly-together
+
+<!-- livebook:{"break_markdown":true} -->
+
+![](files/photo_2024-05-24_15-56-31.jpg)
+
+https://fly.io/blog/remote-ide-machines/
+
+## Understanding Fly.io
+
+```elixir
+Kino.Mermaid.new("""
+graph TD;
+  Users-->|has 1+| Organizations;
+  Organizations-->|has 0+| Apps;
+  Apps-->|has 0+| Machines;
+""")
+```
+
+<!-- livebook:{"output":true} -->
+
+```mermaid
+graph TD;
+  Users-->|has 1+| Organizations;
+  Organizations-->|has 0+| Apps;
+  Apps-->|has 0+| Machines;
+
+```
+
+![](files/photo_2024-05-24_16-02-54.jpg)
+https://api.machines.dev/
+
+## Setup Organization and Token
+
+```elixir
+import Kino.Shorts
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Kino.Shorts
+```
+
+```elixir
+org_slug = read_text("Organization slug")
+
+if org_slug == "" do
+  Kino.interrupt!(:error, "Don't forget your organization slug")
+end
+
+url = "https://fly.io/dashboard/#{org_slug}/tokens"
+
+Kino.Markdown.new("""
+### Token
+[Get your token at #{url}](#{url})
+""")
+```
+
+```elixir
+fly_api_token = read_password("Fly Token")
+
+if fly_api_token == "" do
+  Kino.interrupt!(:error, "We can't do anything without a fly_api_token")
+end
+
+Application.put_env(:presentation, :fly_api_token, fly_api_token)
+
+fly_api_token
+|> String.slice(0..15)
+|> IO.puts()
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+FlyV1 fm2_lJPECA
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+## Quick Fly.io library code
+
+```elixir
+defmodule Fly do
+  def list_apps(org_slug) do
+    Req.get(req_config(), url: "/v1/apps?org_slug=#{org_slug}")
+  end
+
+  def create_app(org_slug, app_name, network) do
+    Req.post(req_config(),
+      url: "/v1/apps",
+      json: %{
+        app_name: app_name,
+        org_slug: org_slug,
+        network: network
+      }
+    )
+  end
+
+  def create_machine(app_name, config) do
+    Req.post(req_config(), url: "/v1/apps/#{app_name}/machines", json: config)
+  end
+
+  def allocate_ip(app_name, type) do
+    query = """
+    mutation ($input: AllocateIPAddressInput!) {
+      allocateIpAddress(input: $input) {
+        ipAddress {
+          address
+        }
+      }
+    }
+    """
+
+    Req.post(graphql_config(),
+      json: %{query: query, variables: %{input: %{appId: app_name, type: type}}}
+    )
+  end
+
+  defp req_config do
+    Req.new(base_url: "https://api.machines.dev", auth: {:bearer, api_token()})
+  end
+
+  defp graphql_config do
+    Req.new(base_url: "https://api.fly.io/graphql", auth: {:bearer, api_token()})
+  end
+
+  defp api_token do
+    Application.get_env(:presentation, :fly_api_token)
+  end
+end
+
+"Created Fly module"
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+"Created Fly module"
+```
+
+## List all your apps
+
+```elixir
+button = Kino.Control.button("List apps") |> Kino.render()
+
+Kino.animate(button, nil, fn _event, _state ->
+  {:ok, %{body: %{"apps" => apps}}} = Fly.list_apps(org_slug)
+  dt = Kino.DataTable.new(apps, name: "Apps")
+  {:cont, dt, nil}
+end)
+```
+
+## Shipping a livebook
+
+<!-- livebook:{"reevaluate_automatically":true} -->
+
+```elixir
+config_for_image = fn region, image_ref, port ->
+  %{
+    "config" => %{
+      "env" => %{
+        "ELIXIR_ERL_OPTIONS" => "-proto_dist inet6_tcp",
+        "LIVEBOOK_DATA_PATH" => "/data",
+        "LIVEBOOK_HOME" => "/data",
+        "LIVEBOOK_ROOT_PATH" => "/data",
+        "LIVEBOOK_IP" => "::",
+        "LIVEBOOK_PASSWORD" => "dummypass123",
+        "PORT" => "8080"
+      },
+      "init" => %{},
+      "guest" => %{
+        "cpu_kind" => "shared",
+        "cpus" => 1,
+        "memory_mb" => 1024
+      },
+      "image" => image_ref,
+      "metadata" => %{},
+      "services" => [
+        %{
+          "autostart" => true,
+          "autostop" => true,
+          "force_instance_key" => nil,
+          "internal_port" => port,
+          "min_machines_running" => 0,
+          "ports" => [
+            %{
+              "force_https" => true,
+              "handlers" => ["http"],
+              "port" => 80
+            },
+            %{
+              "handlers" => ["http", "tls"],
+              "port" => 443
+            }
+          ],
+          "protocol" => "tcp"
+        }
+      ]
+    },
+    "lease_ttl" => 0,
+    "region" => region
+  }
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+#Function<40.105768164/3 in :erl_eval.expr/6>
+```
+
+<!-- livebook:{"reevaluate_automatically":true} -->
+
+```elixir
+frame = Kino.Frame.new()
+
+handle_form = fn
+  %{data: %{action: :check} = data} ->
+    tree = Kino.Tree.new(config_for_image.(data.region, data.image, data.internal_port))
+    Kino.Frame.render(frame, tree)
+
+  %{data: %{action: :ship} = data} ->
+    Kino.Frame.clear(frame)
+
+    config = config_for_image.(data.region, data.image, data.internal_port)
+
+    md = Kino.Markdown.new("### Using config")
+    Kino.Frame.append(frame, md)
+    tree = Kino.Tree.new(config)
+    Kino.Frame.append(frame, tree)
+
+    case Fly.create_app(org_slug, data.app_name, "") do
+      {:ok, %{status: 201, body: body}} ->
+        md = Kino.Markdown.new("### Created app")
+        Kino.Frame.append(frame, md)
+        tree = Kino.Tree.new(body)
+        Kino.Frame.append(frame, tree)
+
+      {_state, res} ->
+        dbg(res)
+        Kino.interrupt!(:error, "Failed to create app, see error above")
+    end
+
+    case Fly.allocate_ip(data.app_name, "v4") do
+      {:ok, %{status: 200, body: body}} ->
+        md = Kino.Markdown.new("### Allocated IPv4")
+        Kino.Frame.append(frame, md)
+        tree = Kino.Tree.new(body)
+        Kino.Frame.append(frame, tree)
+
+      {_state, res} ->
+        dbg(res)
+        Kino.interrupt!(:error, "Failed to allocate IPv4, see error above")
+    end
+
+    case Fly.create_machine(data.app_name, config) do
+      {:ok, %{status: 200, body: %{"id" => id} = body}} ->
+        app_url = "https://#{data.app_name}.fly.dev"
+        dashboard_url = "http://fly.io/apps/#{data.app_name}"
+
+        md =
+          Kino.Markdown.new("""
+          ### Created machine!
+
+          ![](files/200w.gif)
+
+          Machine ID: #{id}
+
+          - [Go to #{app_url}](#{app_url}) to see your app live
+          - [Go to #{dashboard_url}](#{dashboard_url}) to see your app in fly.io
+          - [Go to #{dashboard_url}/monitoring](#{dashboard_url}/monitoring) to see your app live logs
+          """)
+
+        Kino.Frame.append(frame, md)
+        tree = Kino.Tree.new(body)
+        Kino.Frame.append(frame, tree)
+
+      {_state, res} ->
+        dbg(res)
+        Kino.interrupt!(:error, "Failed to create machine, see error above")
+    end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+#Function<42.105768164/1 in :erl_eval.expr/6>
+```
+
+```elixir
+config_form =
+  Kino.Control.form(
+    [
+      app_name: Kino.Input.text("App name", default: "livebook-app-#{Enum.random(10000..99999)}"),
+      image: Kino.Input.text("OCI image ref", default: "ghcr.io/livebook-dev/livebook:0.11.3"),
+      internal_port: Kino.Input.number("Internal Port", default: 8080),
+      region:
+        Kino.Input.select("Region", [{"gru", "São Paulo (gru)"}, {"gig", "Rio de Janeiro (gig)"}]),
+      action: Kino.Input.select("Action", check: "Check config", ship: "Ship machine!")
+    ],
+    submit: "Submit"
+  )
+
+config_form
+```
+
+<!-- livebook:{"reevaluate_automatically":true} -->
+
+```elixir
+Kino.listen(config_form, handle_form)
+frame
+```
+
+## Part 2: Great! Now you've made security folks mad
+
+![](files/290008343-ffe7f630-8e25-4fab-b78d-c6e4b28a0753.jpg)
+
+> Hackers destroying your product
+
+<!-- livebook:{"break_markdown":true} -->
+
+Run this on your Livebook:
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+{:ok, res} = :inet_res.nslookup('_apps.internal', :in, :txt)
+```
+
+```elixir
+{:ok,
+ {:dns_rec, {:dns_header, 1, true, :query, true, false, true, true, false, 0},
+  [{:dns_query, ~c"_apps.internal", :txt, :in, false}],
+  [
+    {:dns_rr, ~c"_apps.internal", :txt, :in, 0, 5,
+     [
+       ~c"achemists-db,alchemists,bugex-silent-cherry-2971,demo-alchemist-1,demo-alchemist-2,demo-alchemist-3,demo-alchemist-4,demo-alchemist-5,demo-alchemist-6,fly-builder-fragrant-sun-9317,javascriptbr-telegram-bot,jobs-bot,livebook-app-12289,livebook-app-13605,l",
+       ~c"ivebook-app-13981,livebook-app-13982,livebook-app-13983,livebook-app-13984,livebook-app-16757,livebook-app-17250,livebook-app-22979,livebook-app-31584,livebook-app-47315,livebook-app-50515,livebook-app-51130,livebook-app-53014,livebook-app-57816,livebook-",
+       ~c"app-60036,livebook-app-72646,livebook-app-78305,livebook-app-96320,livebook-app-97674,onlyferas,onlyferas-db,onlyferas-redis,townhall-1,townhall-2,townhall-5,townhall-6,user-code-d9717100-bcc4-4677-a2f9-a1349f459170,your-first-liveview-1"
+     ], :undefined, [], false}
+  ], [], []}}
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:ok,
+ {:dns_rec, {:dns_header, 1, true, :query, true, false, true, true, false, 0},
+  [{:dns_query, ~c"_apps.internal", :txt, :in, false}],
+  [
+    {:dns_rr, ~c"_apps.internal", :txt, :in, 0, 5,
+     [~c"achemists-db,alchemists,bugex-silent-cherry-2971,demo-alchemist-1,demo-alchemist-2,demo-alchemist-3,demo-alchemist-4,demo-alchemist-5,demo-alchemist-6,fly-builder-fragrant-sun-9317,javascriptbr-telegram-bot,jobs-bot,livebook-app-12289,livebook-app-13605,l",
+      ~c"ivebook-app-13981,livebook-app-13982,livebook-app-13983,livebook-app-13984,livebook-app-16757,livebook-app-17250,livebook-app-22979,livebook-app-31584,livebook-app-47315,livebook-app-50515,livebook-app-51130,livebook-app-53014,livebook-app-57816,livebook-",
+      ~c"app-60036,livebook-app-72646,livebook-app-78305,livebook-app-96320,livebook-app-97674,onlyferas,onlyferas-db,onlyferas-redis,townhall-1,townhall-2,townhall-5,townhall-6,user-code-d9717100-bcc4-4677-a2f9-a1349f459170,your-first-liveview-1"],
+     :undefined, [], false}
+  ], [], []}}
+```
+
+## 6PNs
+
+![](files/photo_2024-05-24_16-15-44.jpg)
+
+https://fly.io/docs/networking/private-networking/
+
+## Making untrusted code safe
+
+Create one network per app.
+
+```diff
+- Fly.create_app(org_slug, data.app_name, "") do
++ Fly.create_app(org_slug, data.app_name, "#{data.app_name}-network")
+```
+
+## Part 3: Why is this even useful?
+
+```elixir
+Kino.Layout.grid(
+  [
+    Kino.Markdown.new("![](files/upstash-white-bg.svg)"),
+    Kino.Markdown.new("![](files/1_pnSzmFJRCJztS7tkSJXYuQ.jpg)"),
+    Kino.Markdown.new("![](files/Tigris-Data-Logo.png)"),
+    Kino.Markdown.new("![](files/124335690-fc7ecd80-db4f-11eb-93fa-dcf4469bb07b.png)"),
+    Kino.Markdown.new("![](files/turso3.png)")
+  ],
+  columns: 3
+)
+```
+
+## Last demo
+
+![](files/alchemists.png)
+
+https://alchemists.lubien.dev/recipes
